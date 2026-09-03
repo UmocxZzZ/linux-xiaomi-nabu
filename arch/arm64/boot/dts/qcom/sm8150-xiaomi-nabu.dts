@@ -531,6 +531,7 @@
 
 &i2c7 {
 	status = "okay";
+	clock-frequency = <400000>;
 
 	cs35l41_br: cs35l41@40 {
 		compatible = "cirrus,cs35l41";
@@ -540,6 +541,7 @@
 		reset-gpios = <&tlmm 92 GPIO_ACTIVE_HIGH>;
 		#sound-dai-cells = <1>;
 		sound-name-prefix = "BR";
+		cirrus,tuning-file = "BR-music.txt";
 		cirrus,boost-peak-milliamp = <4000>;
 		cirrus,boost-ind-nanohenry = <1000>;
 		cirrus,boost-cap-microfarad = <15>;
@@ -556,6 +558,7 @@
 		reset-gpios = <&tlmm 92 GPIO_ACTIVE_HIGH>;
 		#sound-dai-cells = <1>;
 		sound-name-prefix = "TR";
+		cirrus,tuning-file = "TR-music.txt";
 		cirrus,boost-peak-milliamp = <4000>;
 		cirrus,boost-ind-nanohenry = <1000>;
 		cirrus,boost-cap-microfarad = <15>;
@@ -572,6 +575,7 @@
 		reset-gpios = <&tlmm 92 GPIO_ACTIVE_HIGH>;
 		#sound-dai-cells = <1>;
 		sound-name-prefix = "BL";
+		cirrus,tuning-file = "BL-music.txt";
 		cirrus,boost-peak-milliamp = <4000>;
 		cirrus,boost-ind-nanohenry = <1000>;
 		cirrus,boost-cap-microfarad = <15>;
@@ -588,6 +592,7 @@
 		reset-gpios = <&tlmm 92 GPIO_ACTIVE_HIGH>;
 		#sound-dai-cells = <1>;
 		sound-name-prefix = "TL";
+		cirrus,tuning-file = "TL-music.txt";
 		cirrus,boost-peak-milliamp = <4000>;
 		cirrus,boost-ind-nanohenry = <1000>;
 		cirrus,boost-cap-microfarad = <15>;

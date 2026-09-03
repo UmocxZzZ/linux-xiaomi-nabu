@@ -78,6 +78,14 @@ properties:
     maximum: 3
     default: 2
 
+  cirrus,tuning-file:
+    description:
+      Firmware filename containing a comma-separated CSPL parameter update.
+      The first value is the total number of 32-bit words, including the
+      count itself. The update is applied after speaker-protection firmware
+      starts and playback fails closed if the update cannot be validated.
+    $ref: /schemas/types.yaml#/definitions/string
+
   cirrus,boost-type:
     description:
       Configures the type of Boost being used.

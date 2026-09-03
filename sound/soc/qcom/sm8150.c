@@ -307,7 +307,9 @@ static int sm8150_snd_startup(struct snd_pcm_substream *substream)
 
 	switch (cpu_dai->id) {
 	case QUATERNARY_TDM_RX_0:
-		codec_dai_fmt |= SND_SOC_DAIFMT_NB_NF | SND_SOC_DAIFMT_DSP_A;
+		codec_dai_fmt |= SND_SOC_DAIFMT_NB_NF |
+			(of_machine_is_compatible("xiaomi,nabu") ?
+			 SND_SOC_DAIFMT_I2S : SND_SOC_DAIFMT_DSP_A);
 		if (++(data->quat_tdm_clk_count) == 1) {
 			snd_soc_dai_set_sysclk(cpu_dai,
 				Q6AFE_LPASS_CLK_ID_QUAD_TDM_IBIT,

@@ -29,6 +29,11 @@ static const char * const cs35l41_supplies[CS35L41_NUM_SUPPLIES] = {
 	"VP",
 };
 
+#define CS35L41_CSPL_ALG_ID		0xcd
+#define CS35L41_CSPL_CMD_UPDATE_PARAM	8
+#define CS35L41_CSPL_STATE_RUNNING	0
+#define CS35L41_TUNING_MAX_WORDS		100
+
 struct cs35l41_pll_sysclk_config {
 	int freq;
 	int clk_cfg;
@@ -209,6 +214,122 @@ static int cs35l41_dsp_preload_ev(struct snd_soc_dapm_widget *w,
 	}
 }
 
+static int cs35l41_apply_tuning(struct cs35l41_private *cs35l41)
+{
+	const struct firmware *firmware;
+	__be32 *params = NULL;
+	__be32 command = cpu_to_be32(CS35L41_CSPL_CMD_UPDATE_PARAM);
+	__be32 state, error;
+	char *text = NULL, *cursor, *token;
+	unsigned int count;
+	s32 value;
+	int i, ret;
+
+	if (!cs35l41->tuning_file)
+		return 0;
+
+	ret = request_firmware(&firmware, cs35l41->tuning_file,
+			       cs35l41->dev);
+	if (ret)
+		return dev_err_probe(cs35l41->dev, ret,
+				     "Failed to request DSP tuning %s\n",
+				     cs35l41->tuning_file);
+
+	text = kmemdup_nul(firmware->data, firmware->size, GFP_KERNEL);
+	if (!text) {
+		ret = -ENOMEM;
+		goto out;
+	}
+
+	cursor = text;
+	token = strsep(&cursor, ",");
+	ret = token ? kstrtouint(strim(token), 10, &count) : -EINVAL;
+	if (ret || count < 2 || count > CS35L41_TUNING_MAX_WORDS) {
+		dev_err(cs35l41->dev, "Invalid DSP tuning word count in %s\n",
+			cs35l41->tuning_file);
+		ret = -EINVAL;
+		goto out;
+	}
+
+	params = kcalloc(count, sizeof(*params), GFP_KERNEL);
+	if (!params) {
+		ret = -ENOMEM;
+		goto out;
+	}
+	params[0] = cpu_to_be32(count);
+
+	for (i = 1; i < count; i++) {
+		token = strsep(&cursor, ",");
+		ret = token ? kstrtos32(strim(token), 10, &value) : -EINVAL;
+		if (ret) {
+			dev_err(cs35l41->dev,
+				"Invalid DSP tuning word %d in %s\n", i,
+				cs35l41->tuning_file);
+			ret = -EINVAL;
+			goto out;
+		}
+		params[i] = cpu_to_be32(value);
+	}
+
+	if (cursor && *strim(cursor)) {
+		dev_err(cs35l41->dev, "Extra DSP tuning data in %s\n",
+			cs35l41->tuning_file);
+		ret = -EINVAL;
+		goto out;
+	}
+
+	ret = wm_adsp_write_ctl(&cs35l41->dsp,
+				"CSPL_UPDATE_PARAMS_CONFIG", WMFW_ADSP2_YM,
+				CS35L41_CSPL_ALG_ID, params,
+				count * sizeof(*params));
+	if (ret)
+		goto write_error;
+
+	ret = wm_adsp_write_ctl(&cs35l41->dsp, "CSPL_COMMAND",
+				WMFW_ADSP2_XM, CS35L41_CSPL_ALG_ID,
+				&command, sizeof(command));
+	if (ret)
+		goto write_error;
+
+	for (i = 0; i < 10; i++) {
+		ret = wm_adsp_read_ctl(&cs35l41->dsp, "CSPL_STATE",
+				       WMFW_ADSP2_XM, CS35L41_CSPL_ALG_ID,
+				       &state, sizeof(state));
+		if (!ret && be32_to_cpu(state) == CS35L41_CSPL_STATE_RUNNING)
+			break;
+		usleep_range(1000, 1100);
+	}
+	if (ret || i == 10) {
+		dev_err(cs35l41->dev, "DSP tuning did not reach running state\n");
+		ret = ret ?: -ETIMEDOUT;
+		goto out;
+	}
+
+	ret = wm_adsp_read_ctl(&cs35l41->dsp, "CSPL_ERRORNO",
+			       WMFW_ADSP2_XM, CS35L41_CSPL_ALG_ID,
+			       &error, sizeof(error));
+	if (ret || be32_to_cpu(error)) {
+		dev_err(cs35l41->dev, "DSP tuning error: %u\n",
+			ret ? 0 : be32_to_cpu(error));
+		ret = ret ?: -EIO;
+		goto out;
+	}
+
+	dev_info(cs35l41->dev, "Applied DSP tuning %s\n",
+		 cs35l41->tuning_file);
+	ret = 0;
+	goto out;
+
+write_error:
+	dev_err(cs35l41->dev, "Failed to apply DSP tuning %s: %d\n",
+		cs35l41->tuning_file, ret);
+out:
+	kfree(params);
+	kfree(text);
+	release_firmware(firmware);
+	return ret;
+}
+
 static int cs35l41_dsp_audio_ev(struct snd_soc_dapm_widget *w,
 				struct snd_kcontrol *kcontrol, int event)
 {
@@ -219,8 +340,11 @@ static int cs35l41_dsp_audio_ev(struct snd_soc_dapm_widget *w,
 
 	switch (event) {
 	case SND_SOC_DAPM_POST_PMU:
-		if (!cs35l41->dsp.cs_dsp.running)
-			return wm_adsp_event(w, kcontrol, event);
+		if (!cs35l41->dsp.cs_dsp.running) {
+			ret = wm_adsp_event(w, kcontrol, event);
+			if (ret)
+				return ret;
+		}
 
 		ret = regmap_read(cs35l41->regmap, CS35L41_DSP_MBOX_2, &fw_status);
 		if (ret < 0) {
@@ -239,8 +363,17 @@ static int cs35l41_dsp_audio_ev(struct snd_soc_dapm_widget *w,
 			return -EINVAL;
 		}
 
-		return cs35l41_set_cspl_mbox_cmd(cs35l41->dev, cs35l41->regmap,
+		ret = cs35l41_set_cspl_mbox_cmd(cs35l41->dev, cs35l41->regmap,
 						 CSPL_MBOX_CMD_RESUME);
+		if (ret)
+			return ret;
+
+		/*
+		 * A preloaded DSP remains logically running while its mailbox is
+		 * paused.  CSPL does not retain an active tuning state across every
+		 * pause/resume cycle, so refresh the parameters on each DAPM resume.
+		 */
+		return cs35l41_apply_tuning(cs35l41);
 	case SND_SOC_DAPM_PRE_PMD:
 		return cs35l41_set_cspl_mbox_cmd(cs35l41->dev, cs35l41->regmap,
 						 CSPL_MBOX_CMD_PAUSE);
@@ -1201,6 +1334,12 @@ int cs35l41_probe(struct cs35l41_private *cs35l41, const struct cs35l41_hw_cfg *
 		if (ret != 0)
 			return ret;
 	}
+
+	ret = device_property_read_string(cs35l41->dev, "cirrus,tuning-file",
+					  &cs35l41->tuning_file);
+	if (ret && ret != -EINVAL && ret != -ENODATA)
+		return dev_err_probe(cs35l41->dev, ret,
+				     "Failed to read DSP tuning filename\n");
 
 	for (i = 0; i < CS35L41_NUM_SUPPLIES; i++)
 		cs35l41->supplies[i].supply = cs35l41_supplies[i];
